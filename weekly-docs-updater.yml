@@ -1,0 +1,195 @@
+name: Weekly Docs Update Request
+
+on:
+  schedule:
+    # Runs every Monday at 8:00 AM UTC
+    - cron: '0 8 * * 1'
+  workflow_dispatch:  # Allow manual triggering for testing
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  create-docs-update-issue:
+    runs-on: ubuntu-latest
+    name: Create Docs Update Issue for Copilot
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_ACTION_PAT }}
+          fetch-depth: 0
+
+      - name: Create docs update issue
+        run: |
+          # Get current date for issue title
+          CURRENT_DATE=$(date +"%Y-%m-%d")
+
+          # Get the repository node ID for GraphQL
+          REPO_ID=$(gh api graphql -f query='
+            query($owner: String!, $name: String!) {
+              repository(owner: $owner, name: $name) {
+                id
+              }
+            }' -f owner=your_org_name -f name=your_repo_name --jq '.data.repository.id')
+
+          # Get the documentation label ID
+          LABEL_ID=$(gh api graphql -f query='
+            query($owner: String!, $name: String!) {
+              repository(owner: $owner, name: $name) {
+                label(name: "documentation") {
+                  id
+                }
+              }
+            }' -f owner=your_org_name -f name=your_repo_name --jq '.data.repository.label.id // empty')
+
+          # Get Copilot bot user ID using suggestedActors query
+          COPILOT_RESPONSE=$(gh api graphql -f query='
+            query {
+              repository(owner: "your_org_name", name: "your_repo_name") {
+                suggestedActors(capabilities: [CAN_BE_ASSIGNED], first: 100) {
+                  nodes {
+                    login
+                    __typename
+                    ... on Bot {
+                      id
+                    }
+                    ... on User {
+                      id
+                    }
+                  }
+                }
+              }
+            }')
+
+          # Extract the first suggested actor
+          # (should be copilot-swe-agent if enabled)
+          COPILOT_LOGIN=$(echo "$COPILOT_RESPONSE" | \
+            jq -r '.data.repository.suggestedActors.nodes[0].login // empty')
+          COPILOT_ID=$(echo "$COPILOT_RESPONSE" | \
+            jq -r '.data.repository.suggestedActors.nodes[0].id // empty')
+
+          if [ -n "$COPILOT_LOGIN" ] && [ -n "$COPILOT_ID" ]; then
+            echo "Found suggested assignee: $COPILOT_LOGIN"
+          fi
+
+          # Create issue with assignment using GraphQL if assignee found
+          if [ -n "$COPILOT_ID" ] && [ "$COPILOT_ID" != "null" ]; then
+            # Prepare label parameter if label ID is found
+            if [ -n "$LABEL_ID" ] && [ "$LABEL_ID" != "null" ]; then
+              LABEL_PARAM="-f labelIds=\"$LABEL_ID\""
+              MUTATION_QUERY='
+                mutation($repositoryId: ID!, $title: String!, $body: String!, $assigneeIds: [ID!]!, $labelIds: [ID!]!) {
+                  createIssue(input: {repositoryId: $repositoryId, title: $title, body: $body, assigneeIds: $assigneeIds, labelIds: $labelIds}) {
+                    issue {
+                      id
+                      number
+                      title
+                      assignees(first: 10) {
+                        nodes {
+                          login
+                        }
+                      }
+                    }
+                  }
+                }'
+            else
+              LABEL_PARAM=""
+              MUTATION_QUERY='
+                mutation($repositoryId: ID!, $title: String!, $body: String!, $assigneeIds: [ID!]!) {
+                  createIssue(input: {repositoryId: $repositoryId, title: $title, body: $body, assigneeIds: $assigneeIds}) {
+                    issue {
+                      id
+                      number
+                      title
+                      assignees(first: 10) {
+                        nodes {
+                          login
+                        }
+                      }
+                    }
+                  }
+                }'
+            fi
+
+            ISSUE_RESPONSE=$(gh api graphql -f query="$MUTATION_QUERY" \
+              -f repositoryId="$REPO_ID" \
+              -f title="Weekly Docs Update Request - $CURRENT_DATE" \
+              -f body="## 📚 Weekly Documentation Update Request
+
+          Hi @Copilot! 👋
+
+          This is an automated weekly request to review and update our
+          documentation in the \`docs/\` directory.
+
+          ## 🎯 Task Description
+
+          Please scan the entire codebase and compare it against our current
+          documentation to:
+
+          ### 1. Identify Obsolete Documentation
+          - Review all files in \`docs/\` directory
+          - Find sections that no longer reflect the current code state
+          - Identify deprecated practices or outdated information
+
+          ### 2. Find Missing Documentation
+          - Scan code changes since the last docs update
+          - Identify new features, APIs, or functionality not documented
+          - Look for configuration changes not reflected in docs
+
+
+          **Key code areas to scan:**
+          - \`src/\` - Main source code
+          - \`.github/workflows/\` - CI/CD workflows
+          - Configuration files (\`pyproject.toml\`, \`biome.jsonc\`, etc.)
+
+          ### 3. Update Requirements
+
+          Please update the documentation to:
+          - ✅ Reflect current code architecture and structure
+          - ✅ Include new features and functionality
+          - ✅ Update configuration examples and instructions
+          - ✅ Fix any broken links or references
+          - ✅ Ensure consistency across all documentation files
+          - ✅ Add documentation for any undocumented features
+
+          ## 📋 Deliverables
+
+          - Updated documentation files in \`docs/\` directory
+          - Clear commit messages explaining what was updated
+          - Summary of major changes made
+
+          ## 🔍 Additional Context
+
+          - Focus on developer experience and onboarding
+          - Ensure documentation is accurate for current environment setup
+          - Update any outdated tool versions or commands
+          - Review and update workflow documentation if needed
+          - Use git to see what changes have come in since your last update, 
+            and limit your scope as needed based on those changes.
+          - Never change code, only change documentation.
+
+          Thank you for keeping our documentation up to date! 🙏
+
+          ---
+          *This issue was automatically created by the weekly docs update
+          workflow.*" \
+              -f assigneeIds="$COPILOT_ID" \
+              $LABEL_PARAM)
+
+            ISSUE_NUMBER=$(echo "$ISSUE_RESPONSE" | jq -r '.data.createIssue.issue.number')
+            echo "Created issue #$ISSUE_NUMBER and assigned to @$COPILOT_LOGIN"
+          else
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GH_ACTION_PAT }}
+
+      - name: Summary
+        run: |
+          echo "✅ Weekly docs update issue created successfully!"
+          echo "📋 Used GraphQL createIssue mutation with " \
+               "suggestedActors API for assignment"
+          echo "🔍 Issue includes comprehensive instructions for updates"
