@@ -1,4 +1,4 @@
-# copilot-docs-updater
+# copilot-documentation-action
 A Github Action that updates repository documentation every week.
 
 Requires you have access to the Github Copilot Agent, which currently requires a Github Pro+ or Enterprise subscription.
